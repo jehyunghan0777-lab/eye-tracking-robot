@@ -14,3 +14,14 @@ env/
 # Operating-system files
 .DS_Store
 Thumbs.db
+
+# Downloaded MediaPipe model files
+gaze_tracking/models/*.task
+
+# Generated personal calibration data
+gaze_tracking/data/calibration/*
+
+# Preserve intentionally empty directories
+!gaze_tracking/models/.gitkeep
+!gaze_tracking/data/calibration/.gitkeep
+!gaze_tracking/tests/.gitkeep
