@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import time
+import csv
 
 import cv2
 import mediapipe as mp
@@ -19,8 +20,27 @@ MODEL_PATH = (
     / "face_landmarker.task"
 )
 
+CALIBRATION_OUTPUT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "data"
+    / "calibration"
+    / "calibration_samples.csv"
+)
+
 # Target position is normalized from 0 to 1.
-CALIBRATION_TARGETS = (0.5, 0.5)  # Center of the screen.
+CALIBRATION_TARGETS = [
+    (0.1, 0.1),
+    (0.5, 0.1),
+    (0.9, 0.1),
+
+    (0.1,0.5),
+    (0.5, 0.5),
+    (0.9, 0.5),
+
+    (0.1, 0.9),
+    (0.5, 0.9),
+    (0.9, 0.9),
+]
 
 TARGET_OUTER_RADIUS = 20
 TARGET_INNER_RADIUS = 6
@@ -180,6 +200,39 @@ def calculate_eye_position(
     return horizontal_ratio, vertical_ratio
     
 
+def save_calibration_samples(
+    calibration_samples,
+) -> None: 
+    """Save collected calibration samples to CSV file."""
+
+    CALIBRATION_OUTPUT_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    with CALIBRATION_OUTPUT_PATH.open(
+        "w",
+        newline="",
+        encoding="utf-8",
+    ) as csv_file:
+        writer = csv.writer(csv_file)
+
+        writer.writerow(
+            [
+                "eye_horizontal",
+                "eye_vertical",
+                "target_x",
+                "target_y",
+            ]
+        )
+
+        writer.writerows(calibration_samples)
+
+    print(
+        f"Saved calibration data to:\n"
+        f"{CALIBRATION_OUTPUT_PATH}"
+    )
+
 def main() -> int:
     """Run real-time MediPipe facial-landmark detection."""
 
@@ -229,12 +282,18 @@ def main() -> int:
 
     start_time = time.perf_counter()
 
+    current_target_index = 0
+
+    calibration_samples = []
+
     try:
         with FaceLandmarker.create_from_options(options) as landmarker:
             print("Face Landmarker intialized.")
             print("Press Q or ESC to quit.")
 
             while True:
+                current_eye_position = None
+
                 frame_received, frame = camera.read()
 
                 if not frame_received or frame is None:
@@ -303,6 +362,11 @@ def main() -> int:
                             right_vertical + left_vertical
                         ) / 2.0
 
+                        current_eye_position = (
+                            average_horizontal,
+                            average_vertical,
+                        )
+
             
 
                     status_text = (
@@ -316,14 +380,16 @@ def main() -> int:
 
                 display_frame = np.zeros_like(frame)
 
+                current_target = CALIBRATION_TARGETS[current_target_index]
+
                 draw_calibration_target(
                     display_frame,
-                    CALIBRATION_TARGETS,
+                    current_target,
                 )
 
                 cv2.putText(
                     display_frame,
-                    "Look directly at the red center",
+                    "Look directly at the target | Space = next",
                     (20, 40),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.8,
@@ -364,6 +430,39 @@ def main() -> int:
                 if key == ord("q") or key == 27:  # ESC
                     print("Exiting...")
                     break
+
+                if key == ord(" "):
+                    if current_eye_position is None:
+                        print("No valid eye position. Sample not recorded")
+                        continue
+
+                    eye_horizontal, eye_vertical = current_eye_position
+                    target_x, target_y = current_target
+
+                    calibration_samples.append(
+                        [
+                            eye_horizontal,
+                            eye_vertical,
+                            target_x,
+                            target_y
+                        ]
+                    )
+
+                    print(
+                        f"Recorded target {current_target_index + 1}/"
+                        f"{len(CALIBRATION_TARGETS)}"
+                        f"H={eye_horizontal:.3f}, "
+                        f"V={eye_vertical:.3f}, "
+                        f"target=({target_x:.1f}, {target_y:.1f})"
+                    )
+
+                    current_target_index += 1
+
+                    if current_target_index >= len(CALIBRATION_TARGETS):
+                        save_calibration_samples(
+                            calibration_samples,
+                        )
+                        break
     
     finally:
         camera.release()
