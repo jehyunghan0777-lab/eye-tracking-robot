@@ -45,6 +45,9 @@ CALIBRATION_TARGETS = [
 TARGET_OUTER_RADIUS = 20
 TARGET_INNER_RADIUS = 6
 
+# Number of frames to sample per target.
+SAMPLES_PER_TARGET = 30
+
 # Eye-counter landmarks defined by MediaPipe. 
 RIGHT_EYE_INDICES = {
     33, 7, 163, 144, 145, 153, 154, 155,
@@ -134,6 +137,7 @@ def draw_eye_features(
 def draw_calibration_target(
     canvas,
     normalized_position,
+    target_color,
 ) -> None:
     """Draw a calibration target at a normalized screen position."""
 
@@ -148,7 +152,7 @@ def draw_calibration_target(
         canvas,
         (target_x, target_y),
         TARGET_OUTER_RADIUS,
-        (255, 255, 255),  # White
+        target_color,  
         -1,  
         cv2.LINE_AA,
     )
@@ -157,7 +161,7 @@ def draw_calibration_target(
         canvas,
         (target_x, target_y),
         TARGET_INNER_RADIUS,
-        (0, 0, 255),  # Red
+        (255, 255, 255),  # White center.
         -1,  
         cv2.LINE_AA,
     )       
@@ -283,8 +287,10 @@ def main() -> int:
     start_time = time.perf_counter()
 
     current_target_index = 0
-
     calibration_samples = []
+
+    target_eye_samples = []
+    calibration_state = "ready"
 
     try:
         with FaceLandmarker.create_from_options(options) as landmarker:
@@ -293,7 +299,14 @@ def main() -> int:
 
             while True:
                 current_eye_position = None
+                status_text = "No valid eye position"
 
+                # Determine which target is active
+                current_target = CALIBRATION_TARGETS[
+                    current_target_index
+                ]
+
+                # Read and process the camera frame. 
                 frame_received, frame = camera.read()
 
                 if not frame_received or frame is None:
@@ -354,6 +367,8 @@ def main() -> int:
                         right_horizontal, right_vertical = right_eye_position
                         left_horizontal, left_vertical = left_eye_position
 
+
+                        # Calculate average horizontal and vertical positon of iris.               
                         average_horizontal = (
                             right_horizontal + left_horizontal
                         ) / 2.0
@@ -367,29 +382,115 @@ def main() -> int:
                             average_vertical,
                         )
 
-            
-
-                    status_text = (
-                        f"Eye position: |"
-                        f"H: {average_horizontal:.2f} "
-                        f"V: {average_vertical:.2f}"
+                        status_text = (
+                            f"Eye Position | "
+                            f"H: {average_horizontal:.3f} "
+                            f"V: {average_vertical:.3f}"
                         )
+                        
+                        # Collect one valid measurement per video frame.
+                        if calibration_state == "collecting":
+                            target_eye_samples.append(
+                                current_eye_position
+                            )
 
+                        # Finish this target after SAMPLE_PER_TARGET valid frames.
+                        if (
+                            len(
+                            target_eye_samples) 
+                            >= SAMPLES_PER_TARGET
+                        ):
+
+                            average_target_horizontal = sum(
+                                sample[0] for sample in target_eye_samples
+                            ) / len(target_eye_samples)
+
+                            average_target_vertical = sum(
+                                sample[1] for sample in target_eye_samples
+                            ) / len(target_eye_samples)
+
+                            target_x, target_y = current_target
+
+                            calibration_samples.append(
+                                [
+                                    average_target_horizontal,
+                                    average_target_vertical,
+                                    target_x,
+                                    target_y,
+                                ]
+                            )
+
+                            print(
+                                f"Completed target "
+                                f"{current_target_index + 1}/"
+                                f"{len(CALIBRATION_TARGETS)}: "
+                                f"H={average_target_horizontal:.3f}, "
+                                f"V={average_target_vertical:.3f}, "
+                                f"target=({target_x:.1f}, "
+                                f"{target_y:.1f}), "
+                                f"samples={len(target_eye_samples)}"
+                            )
+
+                            target_eye_samples.clear()    
+                            calibration_state = "complete"
+                    
+                    else: 
+                        status_text = "Eye landmarks unavailable"
+                        
                 else:
                     status_text = "No face detected"
 
+                # Create black calibration screen.
                 display_frame = np.zeros_like(frame)
 
-                current_target = CALIBRATION_TARGETS[current_target_index]
+                # Red while collecting; green otherwise. 
+                if calibration_state == "collecting":
+                    target_color = (0, 0, 255)
+                else:  
+                    target_color = (0, 255, 0)
 
                 draw_calibration_target(
                     display_frame,
                     current_target,
+                    target_color,
                 )
+
+                # Select instructions for the current state.
+                if calibration_state == "ready":
+                    instruction_text = (
+                        f"Target {current_target_index + 1}/"
+                        f"{len(CALIBRATION_TARGETS)} "
+                        f"| Look at target and press Space"
+                    )
+
+                elif calibration_state == "collecting":
+                    instruction_text = (
+                        f"Collecting: "
+                        f"{len(target_eye_samples)}/"
+                        f"{SAMPLES_PER_TARGET} "
+                        f"| Keep looking at the target"
+                    )
+
+                else:
+                    is_last_target = (
+                        current_target_index
+                        == len(CALIBRATION_TARGETS) - 1
+                    )
+
+                    if is_last_target:
+                            instruction_text = (
+                                "Calibration complete | "
+                                "Press Space to save and exit"
+                            )
+                    else:
+                        instruction_text = (
+                            "Target complete |"
+                            "Press Space for the next target"
+                        )
 
                 cv2.putText(
                     display_frame,
-                    "Look directly at the target | Space = next",
+                    instruction_text,
                     (20, 40),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.8,
@@ -432,38 +533,39 @@ def main() -> int:
                     break
 
                 if key == ord(" "):
-                    if current_eye_position is None:
-                        print("No valid eye position. Sample not recorded")
-                        continue
+                    if calibration_state == "ready":
+                        if current_eye_position is None:
+                            print("No valid eye position. Sample not recorded")
+                        else:
+                            target_eye_samples.clear()
+                            calibration_state = "collecting"
 
-                    eye_horizontal, eye_vertical = current_eye_position
-                    target_x, target_y = current_target
-
-                    calibration_samples.append(
-                        [
-                            eye_horizontal,
-                            eye_vertical,
-                            target_x,
-                            target_y
-                        ]
-                    )
-
-                    print(
-                        f"Recorded target {current_target_index + 1}/"
-                        f"{len(CALIBRATION_TARGETS)}"
-                        f"H={eye_horizontal:.3f}, "
-                        f"V={eye_vertical:.3f}, "
-                        f"target=({target_x:.1f}, {target_y:.1f})"
-                    )
-
-                    current_target_index += 1
-
-                    if current_target_index >= len(CALIBRATION_TARGETS):
-                        save_calibration_samples(
-                            calibration_samples,
+                            print(
+                                f"Started target "
+                                f"{current_target_index + 1}/"
+                                f"{len(CALIBRATION_TARGETS)}"
+                            )
+                    
+                    elif calibration_state == "collecting":
+                        print(
+                            "Calibration is already collecting samples."
                         )
-                        break
-    
+                    
+                    elif calibration_state == "complete":
+                        is_last_target = (
+                            current_target_index
+                            == len(CALIBRATION_TARGETS) - 1
+                        )
+
+                        if is_last_target:
+                            save_calibration_samples(
+                                calibration_samples
+                            )
+                            break
+                        
+                        current_target_index += 1
+                        calibration_state = "ready"
+
     finally:
         camera.release()
         cv2.destroyAllWindows()
