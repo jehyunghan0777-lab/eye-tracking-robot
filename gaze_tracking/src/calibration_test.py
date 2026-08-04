@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import time
 import csv
+import math
 
 import cv2
 import mediapipe as mp
@@ -70,11 +71,6 @@ LEFT_IRIS_CENTER_INDEX = 473
 # Horizontal eye corners.
 RIGHT_EYE_CORNER_INDEX = (33, 133)
 LEFT_EYE_CORNER_INDEX = (263, 362)  
-
-# Approximate upper and lower eyelid landmarks.
-RIGHT_EYELID_VERTICAL_INDICES = (159, 145)
-LEFT_EYELID_VERTICAL_INDICES = (386, 374)
-
 
 def open_camera() -> cv2.VideoCapture:
     """Open the default Windows webcam."""
@@ -170,39 +166,85 @@ def calculate_eye_position(
     face_landmarks, 
     iris_center_index,
     eye_corner_indices,
-    eye_vertical_indices,
+    frame_width,
+    frame_height,
 ):
-    """Calculate the normalized iris position inside one eye."""
+    """Calculate iris position relative to the line between the eye corners.
+    
+    The corner-to-conrner line defines the horizontal eye axis.
+    The perpendicular distance from that line define vertical position. 
+    """
 
     iris_center = face_landmarks[iris_center_index]
 
     corner_a = face_landmarks[eye_corner_indices[0]]
     corner_b = face_landmarks[eye_corner_indices[1]]
 
-    upper_eyelid = face_landmarks[eye_vertical_indices[0]]
-    lower_eyelid = face_landmarks[eye_vertical_indices[1]]
+    # Convert MediaPipe normalized coordinates to pixel coordinates.
+    iris_x = iris_center.x * frame_width
+    iris_y = iris_center.y * frame_height
 
-    # Determine the horizontal eye boundries.
-    eye_left_x = min(corner_a.x, corner_b.x)
-    eye_right_x = max(corner_a.x, corner_b.x)
+    corner_a_x = corner_a.x * frame_width
+    corner_a_y = corner_a.y * frame_height
 
-    # Determine the vertical eye boundries.
-    eye_top_y = min(upper_eyelid.y, lower_eyelid.y)
-    eye_bottom_y = max(upper_eyelid.y, lower_eyelid.y)
+    corner_b_x = corner_b.x * frame_width
+    corner_b_y = corner_b.y * frame_height
 
-    eye_width = eye_right_x - eye_left_x
-    eye_height = eye_bottom_y - eye_top_y
 
-    # Protect against division by zero
-    if eye_width <= 0 or eye_height <= 0:
+    # Always order the corners from image-left to image-right.
+    if corner_a_x <= corner_b_x:
+        left_corner_x = corner_a_x
+        left_corner_y = corner_a_y
+
+        right_corner_x = corner_b_x
+        right_corner_y = corner_b_y
+        
+    else:
+        left_corner_x = corner_b_x
+        left_corner_y = corner_b_y
+
+        right_corner_x = corner_a_x
+        right_corner_y = corner_a_y
+    
+    # Vector from the left corner to the right corner.
+    eye_axis_x = right_corner_x - left_corner_x
+    eye_axis_y = right_corner_y - left_corner_y
+
+    eye_width = math.hypot(
+        eye_axis_x,
+        eye_axis_y,
+    )
+
+    if eye_width <= 0:
         return None
 
-    horizontal_ratio = (iris_center.x - eye_left_x) / eye_width
+    # Vector from the left eye corner to the iris center
+    iris_offset_x = iris_x - left_corner_x
+    iris_offset_y = iris_y - left_corner_y
 
-    vertical_ratio = (iris_center.y - eye_top_y) / eye_height
+    # Project the iris onto the corner-to-corner eye axis.
+    horizontal_distance = (
+        iris_offset_x * eye_axis_x
+        + iris_offset_y * eye_axis_y
+    ) / eye_width
+
+    # Measure the perpendicular distance from the eye axis.
+    vertical_distance = (
+        iris_offset_x * (-eye_axis_y)
+        + iris_offset_y * eye_axis_x
+    ) / eye_width
+
+    # Normalize both distances using eye width
+    horizontal_ratio = (
+        horizontal_distance / eye_width
+    )
+
+    vertical_ratio = (
+        vertical_distance / eye_width
+    )
 
     return horizontal_ratio, vertical_ratio
-    
+
 
 def save_calibration_samples(
     calibration_samples,
@@ -319,6 +361,9 @@ def main() -> int:
                 # Mirror the webcame preview. 
                 frame = cv2.flip(frame, 1)
 
+                # Get frame dimensions for pixel conversion.
+                frame_height, frame_width = frame.shape[:2]
+
                 # OpenCV stores images as BGR.
                 # MediaPipe expects RGB.
                 rgb_frame = cv2.cvtColor(
@@ -353,14 +398,16 @@ def main() -> int:
                         face_landmarks,
                         RIGHT_IRIS_CENTER_INDEX,
                         RIGHT_EYE_CORNER_INDEX,
-                        RIGHT_EYELID_VERTICAL_INDICES,
+                        frame_width,
+                        frame_height,
                     )
 
                     left_eye_position = calculate_eye_position(
                         face_landmarks,
                         LEFT_IRIS_CENTER_INDEX,
                         LEFT_EYE_CORNER_INDEX,
-                        LEFT_EYELID_VERTICAL_INDICES,
+                        frame_width,
+                        frame_height,
                     )
 
                     if right_eye_position is not None and left_eye_position is not None:
@@ -394,46 +441,46 @@ def main() -> int:
                                 current_eye_position
                             )
 
-                        # Finish this target after SAMPLE_PER_TARGET valid frames.
-                        if (
-                            len(
-                            target_eye_samples) 
-                            >= SAMPLES_PER_TARGET
-                        ):
+                            # Finish this target after SAMPLE_PER_TARGET valid frames.
+                            if (
+                                len(
+                                target_eye_samples) 
+                                >= SAMPLES_PER_TARGET
+                            ):
 
-                            average_target_horizontal = sum(
-                                sample[0] for sample in target_eye_samples
-                            ) / len(target_eye_samples)
+                                average_target_horizontal = sum(
+                                    sample[0] for sample in target_eye_samples
+                                ) / len(target_eye_samples)
 
-                            average_target_vertical = sum(
-                                sample[1] for sample in target_eye_samples
-                            ) / len(target_eye_samples)
+                                average_target_vertical = sum(
+                                    sample[1] for sample in target_eye_samples
+                                ) / len(target_eye_samples)
 
-                            target_x, target_y = current_target
+                                target_x, target_y = current_target
 
-                            calibration_samples.append(
-                                [
-                                    average_target_horizontal,
-                                    average_target_vertical,
-                                    target_x,
-                                    target_y,
-                                ]
-                            )
+                                calibration_samples.append(
+                                    [
+                                        average_target_horizontal,
+                                        average_target_vertical,
+                                        target_x,
+                                        target_y,
+                                    ]
+                                )
 
-                            print(
-                                f"Completed target "
-                                f"{current_target_index + 1}/"
-                                f"{len(CALIBRATION_TARGETS)}: "
-                                f"H={average_target_horizontal:.3f}, "
-                                f"V={average_target_vertical:.3f}, "
-                                f"target=({target_x:.1f}, "
-                                f"{target_y:.1f}), "
-                                f"samples={len(target_eye_samples)}"
-                            )
+                                print(
+                                    f"Completed target "
+                                    f"{current_target_index + 1}/"
+                                    f"{len(CALIBRATION_TARGETS)}: "
+                                    f"H={average_target_horizontal:.3f}, "
+                                    f"V={average_target_vertical:.3f}, "
+                                    f"target=({target_x:.1f}, "
+                                    f"{target_y:.1f}), "
+                                    f"samples={len(target_eye_samples)}"
+                                )
 
-                            target_eye_samples.clear()    
-                            calibration_state = "complete"
-                    
+                                target_eye_samples.clear()    
+                                calibration_state = "complete"
+                        
                     else: 
                         status_text = "Eye landmarks unavailable"
                         
