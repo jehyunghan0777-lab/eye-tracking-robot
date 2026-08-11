@@ -323,10 +323,10 @@ def main() -> int:
             f")"
         )
 
-    print(
-        "\nSaved regression model to:\n"
-        f"{MODEL_OUTPUT_PATH}"
-    )
+        print(
+            "\nSaved regression model to:\n"
+            f"{MODEL_OUTPUT_PATH}"
+        )
 
     return 0
 
