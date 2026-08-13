@@ -25,3 +25,6 @@ gaze_tracking/data/calibration/*
 !gaze_tracking/models/.gitkeep
 !gaze_tracking/data/calibration/.gitkeep
 !gaze_tracking/tests/.gitkeep
+
+*.pt
+gaze_tracking/data/test_scene.jpg
