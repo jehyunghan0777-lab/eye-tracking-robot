@@ -1,4 +1,5 @@
 from __future__ import annotations
+from target_pose_sender import send_target_pose
 
 from pathlib import Path
 import sys
@@ -50,6 +51,17 @@ WINDOW_NAME = "Gaze Object Selection"
 DISPLAY_WIDTH = 1280
 DISPLAY_HEIGHT = 720
 
+SIMULATED_ROBOT_X_LEFT = 0.381
+SIMULATED_ROBOT_X_RIGHT = 0.371
+SIMULATED_ROBOT_Y = 0.000
+SIMULATED_ROBOT_Z = 0.226
+
+SIMULATED_ORIENTATION = (
+    0.017,
+    0.707,
+    0.017,
+    0.707,
+)
 
 def validate_required_files() -> bool:
     required_files = {
@@ -302,6 +314,41 @@ def draw_interface(
 
     return display_frame
 
+def send_simulated_robot_target(
+    detected_object: DetectedObject,
+) -> None:
+    center_x, _ = detected_object.center
+
+    horizontal_fraction = (
+        center_x / (DISPLAY_WIDTH - 1)
+    )
+
+    robot_x = (
+        SIMULATED_ROBOT_X_LEFT
+        + horizontal_fraction
+        * (
+            SIMULATED_ROBOT_X_RIGHT
+            - SIMULATED_ROBOT_X_LEFT
+        )
+    )
+
+    qx, qy, qz, qw = SIMULATED_ORIENTATION
+
+    send_target_pose(
+        x=robot_x,
+        y=SIMULATED_ROBOT_Y,
+        z=SIMULATED_ROBOT_Z,
+        qx=qx,
+        qy=qy,
+        qz=qz,
+        qw=qw,
+    )
+
+    print(
+        f"Sent gaze-selected object "
+        f"'{detected_object.label}' "
+        f"to robot x={robot_x:.3f}"
+    )
 
 def main() -> int:
     if not validate_required_files():
@@ -404,6 +451,8 @@ def main() -> int:
 
     start_time = time.perf_counter()
 
+    last_sent_object: DetectedObject | None = None
+
     try:
         with (
             mp.tasks.vision.FaceLandmarker
@@ -464,6 +513,29 @@ def main() -> int:
                     detected_objects,
                     selection,
                 )
+
+                if (
+                    selection is None
+                    or selection.candidate is None
+                ):
+                    last_sent_object = None
+                elif (
+                    selection.selected is not None
+                    and selection.selected is not last_sent_object
+                ):
+                    selected_object = selection.selected
+                    last_sent_object = selected_object
+
+                    try:
+                        send_simulated_robot_target(
+                            selected_object
+                        )
+                    except OSError as error:
+                        print(
+                            f"ERROR: Could not send robot target: "
+                            f"{error}",
+                            file=sys.stderr
+                        )
 
                 cv2.imshow(
                     WINDOW_NAME,
