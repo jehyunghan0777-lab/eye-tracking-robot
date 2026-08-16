@@ -59,7 +59,7 @@ class TcpGripperBridge(Node):
                 client_socket, address = self.server_socket.accept()
             except BlockingIOError:
                 return
-            
+
             client_socket.setblocking(False)
             self.client_socket = client_socket
 
@@ -78,7 +78,7 @@ class TcpGripperBridge(Node):
         if not received_data:
             self.disconnect_client()
             return
-        
+
         try:
             self.receive_buffer += received_data.decode("utf-8")
         except UnicodeDecodeError:
@@ -96,7 +96,7 @@ class TcpGripperBridge(Node):
 
             if line.strip():
                 self.process_command(line)
-    
+
     def process_command(self, json_line):
         try:
             payload = json.loads(json_line)
@@ -121,13 +121,13 @@ class TcpGripperBridge(Node):
                 f"Rejected gripper command: {error}"
             )
             return
-        
+
         if self.command_in_progress:
             self.get_logger().warning(
                 "Rejected command because the gripper is busy"
             )
             return
-        
+
         if not self.action_client.server_is_ready():
             self.get_logger().error(
                 "Gripper action server is not available"
@@ -138,7 +138,7 @@ class TcpGripperBridge(Node):
         goal.command.name = ["gripper"]
         goal.command.position = [position]
 
-        self.command_in_progress = True 
+        self.command_in_progress = True
 
         self.get_logger().info(
             f"Sending gripper command: {command}"
@@ -158,7 +158,7 @@ class TcpGripperBridge(Node):
                 f"Failed to send gripper goal: {error}"
             )
             return
-        
+
         if not goal_handle.accepted:
             self.command_in_progress = False
             self.get_logger().error(
@@ -209,13 +209,13 @@ class TcpGripperBridge(Node):
         self.disconnect_client()
         self.server_socket.close()
         super().destroy_node()
-    
+
 def main(args=None):
     rclpy.init(args=args)
 
     node = TcpGripperBridge()
 
-    try: 
+    try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
