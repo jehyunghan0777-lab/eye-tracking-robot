@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             "tcp_pose_bridge = gaze_target_bridge.tcp_pose_bridge:main",
+            "tcp_gripper_bridge = gaze_target_bridge.tcp_gripper_bridge:main",
         ],
     },
 )
