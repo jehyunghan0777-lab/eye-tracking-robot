@@ -30,3 +30,9 @@ gaze_tracking/data/calibration/*
 gaze_tracking/data/test_scene.jpg
 
 .vscode/
+
+# Local sEMG recordings
+semg_control/data/raw/*.csv
+
+# STM32CubeIDE build output
+semg_control/firmware/**/Debug/

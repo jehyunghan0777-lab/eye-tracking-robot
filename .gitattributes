@@ -1,0 +1,2 @@
+# Normalize STM32CubeIDE-generated text in Git
+semg_control/** text eol=lf
