@@ -28,3 +28,5 @@ gaze_tracking/data/calibration/*
 
 *.pt
 gaze_tracking/data/test_scene.jpg
+
+.vscode/
