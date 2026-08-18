@@ -5,6 +5,14 @@ import time
 
 import cv2
 import mediapipe as mp
+import numpy as np
+
+from camera_robot_calibration import (
+    DEFAULT_OUTPUT_PATH,
+    CalibrationResult,
+    load_calibration,
+    transform_camera_point,
+)
 
 from calibration_test import (
     LEFT_EYE_CORNER_INDEX,
@@ -47,6 +55,8 @@ from target_selector import (
     TargetSelector,
 )
 
+from target_pose_sender import send_target_pose
+
 
 WINDOW_NAME = "Gaze Object Selection"
 
@@ -54,6 +64,13 @@ DISPLAY_WIDTH = 1280
 DISPLAY_HEIGHT = 720
 
 D435_FRAMES_PER_SECOND = 30
+
+ROBOT_TARGET_ORIENTATION = (
+    0.017,
+    0.707,
+    0.017,
+    0.707,
+)
 
 
 def validate_required_files() -> bool:
@@ -362,9 +379,81 @@ def selection_key(
     )
 
 
+def send_localized_robot_target(
+    target: LocalizedTarget,
+    calibration: CalibrationResult,
+    object_label: str,
+) -> None:
+    camera_point = np.asarray(
+        [
+            target.camera_x,
+            target.camera_y,
+            target.camera_z,
+        ],
+        dtype=np.float64,
+    )
+
+    base_point = transform_camera_point(
+        camera_point,
+        calibration,
+    )
+
+    qx, qy, qz, qw = ROBOT_TARGET_ORIENTATION
+
+    send_target_pose(
+        x=float(base_point[0]),
+        y=float(base_point[1]),
+        z=float(base_point[2]),
+        qx=qx,
+        qy=qy,
+        qz=qz,
+        qw=qw,
+        frame_id="base_link",
+    )
+
+    print(
+        f"Sent '{object_label}' in base_link: "
+        f"x={base_point[0]:.3f}, "
+        f"y={base_point[1]:.3f}, "
+        f"z={base_point[2]:.3f} m"
+    )
+
+
 def main() -> int:
     if not validate_required_files():
         return 1
+
+    camera_robot_calibration = None
+
+    if DEFAULT_OUTPUT_PATH.exists():
+        try:
+            camera_robot_calibration = (
+                load_calibration(
+                    DEFAULT_OUTPUT_PATH
+                )
+            )
+
+            print(
+                "Loaded camera-to-robot calibration: "
+                f"RMSE "
+                f"{camera_robot_calibration.rmse_meters * 1000.0:.1f} mm"
+            )
+        except (
+            KeyError,
+            OSError,
+            ValueError,
+        ) as error:
+            print(
+                "ERROR: Could not load camera-to-robot "
+                f"calibration: {error}",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        print(
+            "Camera-to-robot calibration not found. "
+            "Running in localization-only mode."
+        )
 
     regression_model = load_regression_model(
         MODEL_PATH
@@ -548,6 +637,24 @@ def main() -> int:
                         )
 
                         last_selected_key = selected_key
+
+                        if (
+                            localized_target is not None
+                            and camera_robot_calibration
+                            is not None
+                        ):
+                            try:
+                                send_localized_robot_target(
+                                    localized_target,
+                                    camera_robot_calibration,
+                                    selected_object.label,
+                                )
+                            except OSError as error:
+                                print(
+                                    "ERROR: Could not send robot "
+                                    f"target: {error}",
+                                    file=sys.stderr,
+                                )
 
                 if localized_target is not None:
                     display_frame = draw_localized_target(
