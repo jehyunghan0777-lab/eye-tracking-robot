@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter, deque
 import json
 import socket
 import time
@@ -23,7 +24,6 @@ def parse_intent(
             .decode("utf-8")
             .strip()
         )
-
     except UnicodeDecodeError:
         return None
 
@@ -42,6 +42,25 @@ def parse_intent(
         "EXTEND",
         "REST",
     }:
+        return None
+
+    return intent
+
+
+def determine_stable_intent(
+    intent_history: deque[str],
+    required_votes: int,
+) -> str | None:
+    if len(intent_history) < required_votes:
+        return None
+
+    vote_counts = Counter(intent_history)
+
+    intent, vote_count = (
+        vote_counts.most_common(1)[0]
+    )
+
+    if vote_count < required_votes:
         return None
 
     return intent
@@ -73,8 +92,8 @@ def send_gripper_command(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Forward STM32 sEMG intent "
-            "classifications to ROS."
+            "Filter STM32 sEMG classifications "
+            "and forward stable commands to ROS."
         )
     )
 
@@ -108,27 +127,84 @@ def main() -> int:
         default=2.0,
     )
 
+    parser.add_argument(
+        "--vote-window",
+        type=int,
+        default=5,
+        help="Number of recent predictions used for voting.",
+    )
+
+    parser.add_argument(
+        "--required-votes",
+        type=int,
+        default=4,
+        help="Votes required to confirm an intent.",
+    )
+
+    parser.add_argument(
+        "--cooldown",
+        type=float,
+        default=0.75,
+        help="Minimum seconds between gripper commands.",
+    )
+
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Test filtering without connecting to ROS.",
+    )
+
     arguments = parser.parse_args()
+
+    if arguments.vote_window <= 0:
+        parser.error("--vote-window must be positive")
+
+    if (
+        arguments.required_votes <= 0
+        or arguments.required_votes
+        > arguments.vote_window
+    ):
+        parser.error(
+            "--required-votes must be between 1 "
+            "and --vote-window"
+        )
+
+    if arguments.cooldown < 0.0:
+        parser.error("--cooldown cannot be negative")
+
+    intent_history: deque[str] = deque(
+        maxlen=arguments.vote_window
+    )
 
     pending_command = None
     next_connection_attempt = 0.0
-    last_intent = None
+    last_command_time = float("-inf")
 
-    print("sEMG to ROS gripper bridge")
-    print("--------------------------")
-    print(
-        f"Serial: "
-        f"{arguments.serial_port}"
-    )
+    last_raw_intent = None
+    stable_intent = None
+
+    # The bridge starts disarmed. A stable REST must
+    # be detected before the first command is accepted.
+    command_armed = False
+
+    print("Filtered sEMG to ROS gripper bridge")
+    print("-----------------------------------")
+    print(f"Serial: {arguments.serial_port}")
     print(
         f"ROS TCP bridge: "
-        f"{arguments.host}:"
-        f"{arguments.tcp_port}"
+        f"{arguments.host}:{arguments.tcp_port}"
     )
+    print(
+        f"Voting: {arguments.required_votes} of "
+        f"{arguments.vote_window}"
+    )
+    print(f"Cooldown: {arguments.cooldown:.2f} seconds")
+
+    if arguments.dry_run:
+        print("Mode: DRY RUN — ROS commands are disabled")
+
     print()
-    print("CLOSE  -> close gripper")
-    print("EXTEND -> open gripper")
-    print("REST   -> hold current state")
+    print("Begin with your hand resting.")
     print()
 
     try:
@@ -146,47 +222,95 @@ def main() -> int:
                     serial_connection.readline()
                 )
 
+                current_time = time.perf_counter()
+
                 if received_line:
                     intent = parse_intent(
                         received_line
                     )
 
-                    if (
-                        intent is not None
-                        and intent != last_intent
-                    ):
-                        print(
-                            f"STM32 intent: {intent}"
+                    if intent is not None:
+                        if intent != last_raw_intent:
+                            print(
+                                f"Raw STM32 intent: {intent}"
+                            )
+                            last_raw_intent = intent
+
+                        intent_history.append(intent)
+
+                        voted_intent = (
+                            determine_stable_intent(
+                                intent_history,
+                                arguments.required_votes,
+                            )
                         )
 
-                        last_intent = intent
-
-                        if intent == "REST":
-                            pending_command = None
+                        if (
+                            voted_intent is not None
+                            and voted_intent
+                            != stable_intent
+                        ):
+                            stable_intent = voted_intent
 
                             print(
-                                "Gripper command: HOLD"
-                            )
-                        else:
-                            pending_command = (
-                                INTENT_TO_GRIPPER_COMMAND[
-                                    intent
-                                ]
+                                "Confirmed intent: "
+                                f"{stable_intent}"
                             )
 
-                            next_connection_attempt = (
-                                0.0
-                            )
+                            if stable_intent == "REST":
+                                if pending_command is not None:
+                                    print(
+                                        "Cancelled pending command"
+                                    )
 
-                current_time = (
-                    time.perf_counter()
-                )
+                                pending_command = None
+                                command_armed = True
+
+                                print(
+                                    "System armed for one gesture"
+                                )
+
+                            elif not command_armed:
+                                print(
+                                    "Ignored gesture: return to "
+                                    "REST before another command"
+                                )
+
+                            else:
+                                pending_command = (
+                                    INTENT_TO_GRIPPER_COMMAND[
+                                        stable_intent
+                                    ]
+                                )
+
+                                command_armed = False
+
+                                next_connection_attempt = max(
+                                    current_time,
+                                    last_command_time
+                                    + arguments.cooldown,
+                                )
+
+                                print(
+                                    "Accepted gripper command: "
+                                    f"{pending_command}"
+                                )
 
                 if (
                     pending_command is not None
                     and current_time
-                        >= next_connection_attempt
+                    >= next_connection_attempt
                 ):
+                    if arguments.dry_run:
+                        print(
+                            "DRY RUN command: "
+                            f"{pending_command}"
+                        )
+
+                        pending_command = None
+                        last_command_time = current_time
+                        continue
+
                     try:
                         send_gripper_command(
                             command=pending_command,
@@ -203,6 +327,7 @@ def main() -> int:
                         )
 
                         pending_command = None
+                        last_command_time = current_time
 
                     except OSError as error:
                         print(
