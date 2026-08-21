@@ -13,8 +13,13 @@ from moveit_configs_utils import MoveItConfigsBuilder
 def generate_launch_description():
     namespace = LaunchConfiguration("namespace")
     variant = LaunchConfiguration("variant")
+    hardware_type = LaunchConfiguration("hardware_type")
+    follower_usb_port = LaunchConfiguration("follower_usb_port")
+    use_rviz = LaunchConfiguration("use_rviz")
     use_sim_time = LaunchConfiguration("use_sim_time")
     execute_motion = LaunchConfiguration("execute_motion")
+    pose_bridge_port = LaunchConfiguration("pose_bridge_port")
+    gripper_bridge_port = LaunchConfiguration("gripper_bridge_port")
 
     xacro_path = os.path.join(
         get_package_share_directory("so101_description"),
@@ -62,11 +67,45 @@ def generate_launch_description():
             )
         ),
         launch_arguments={
-            "hardware_type": "mock",
+            "hardware_type": hardware_type,
+            "follower_usb_port": follower_usb_port,
             "namespace": namespace,
             "use_cameras": "false",
-            "use_rviz": "true",
+            "use_rviz": use_rviz,
         }.items(),
+    )
+
+    pose_bridge_node = Node(
+        package="gaze_target_bridge",
+        executable="tcp_pose_bridge",
+        output="screen",
+        parameters=[
+            {
+                "host": "0.0.0.0",
+                "port": ParameterValue(
+                    pose_bridge_port,
+                    value_type=int,
+                ),
+            }
+        ],
+    )
+
+    gripper_bridge_node = Node(
+        package="gaze_target_bridge",
+        executable="tcp_gripper_bridge",
+        output="screen",
+        parameters=[
+            {
+                "host": "0.0.0.0",
+                "port": ParameterValue(
+                    gripper_bridge_port,
+                    value_type=int,
+                ),
+                "action_name": (
+                    "/follower/gripper_controller/gripper_cmd"
+                ),
+            }
+        ],
     )
 
     planner_node = Node(
@@ -102,6 +141,19 @@ def generate_launch_description():
                 default_value="follower",
             ),
             DeclareLaunchArgument(
+                "hardware_type",
+                default_value="mock",
+                description="Use 'real' only for the physical follower.",
+            ),
+            DeclareLaunchArgument(
+                "follower_usb_port",
+                default_value="/dev/so101_follower",
+            ),
+            DeclareLaunchArgument(
+                "use_rviz",
+                default_value="true",
+            ),
+            DeclareLaunchArgument(
                 "use_sim_time",
                 default_value="false",
             ),
@@ -110,7 +162,17 @@ def generate_launch_description():
                 default_value="false",
                 description="Execute planned motion when true",
             ),
+            DeclareLaunchArgument(
+                "pose_bridge_port",
+                default_value="5055",
+            ),
+            DeclareLaunchArgument(
+                "gripper_bridge_port",
+                default_value="5056",
+            ),
             so101_demo,
+            pose_bridge_node,
+            gripper_bridge_node,
             planner_node,
         ]
     )

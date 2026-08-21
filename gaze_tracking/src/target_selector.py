@@ -197,3 +197,7 @@ class TargetSelector:
     def _reset_candidate(self) -> None:
         self.candidate_key = None
         self.candidate_start_time = None
+
+    def reset(self) -> None:
+        """Cancel the current dwell candidate."""
+        self._reset_candidate()
