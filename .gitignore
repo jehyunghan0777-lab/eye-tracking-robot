@@ -28,3 +28,22 @@ gaze_tracking/data/calibration/*
 
 *.pt
 gaze_tracking/data/test_scene.jpg
+
+.vscode/
+
+# sEMG calibration data and generated models
+semg_control/data/raw/
+semg_control/models/semg_lda_model.h
+semg_control/models/semg_lda_model.json
+semg_control/firmware/semg_intent_controller/Core/Inc/semg_lda_model.h
+
+# STM32 build outputs / local backups
+semg_control/firmware/semg_intent_controller/Debug/
+semg_control/firmware/semg_intent_controller/Release/
+semg_control/firmware/semg_intent_controller/*.launch
+semg_control/firmware/semg_intent_controller/**/*.classifier_backup
+semg_control/firmware/semg_intent_controller/**/*.pre_notch_backup
+
+# Python generated files
+__pycache__/
+*.pyc

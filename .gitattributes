@@ -1,0 +1,15 @@
+* text=auto
+
+*.c text eol=lf
+*.h text eol=lf
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.s text eol=lf
+*.ld text eol=lf
+*.xml text eol=lf
+*.ioc text eol=lf
+*.prefs text eol=lf
+.cproject text eol=lf
+.project text eol=lf
+.mxproject text eol=lf
+semg_control/firmware/semg_intent_controller/** -text

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-from pathlib import Path
 import sys
 import time
 
 import cv2
 import mediapipe as mp
+import numpy as np
+
+from camera_robot_calibration import (
+    DEFAULT_OUTPUT_PATH,
+    CalibrationResult,
+    load_calibration,
+    transform_camera_point,
+)
 
 from calibration_test import (
     LEFT_EYE_CORNER_INDEX,
@@ -31,24 +38,39 @@ from object_tracker import (
     ObjectTracker,
 )
 
+from realsense_camera import (
+    RealSenseCamera,
+    RealSenseCameraError,
+    RealSenseFrame,
+)
+
+from rgbd_target_localizer import (
+    LocalizedTarget,
+    RgbdTargetLocalizer,
+    draw_localized_target,
+)
+
 from target_selector import (
     SelectionResult,
     TargetSelector,
 )
 
+from target_pose_sender import send_target_pose
 
-PROJECT_DIRECTORY = Path(__file__).resolve().parents[1]
-
-SCENE_IMAGE_PATH = (
-    PROJECT_DIRECTORY
-    / "data"
-    / "test_scene.jpg"
-)
 
 WINDOW_NAME = "Gaze Object Selection"
 
 DISPLAY_WIDTH = 1280
 DISPLAY_HEIGHT = 720
+
+D435_FRAMES_PER_SECOND = 30
+
+ROBOT_TARGET_ORIENTATION = (
+    0.017,
+    0.707,
+    0.017,
+    0.707,
+)
 
 
 def validate_required_files() -> bool:
@@ -56,7 +78,6 @@ def validate_required_files() -> bool:
         "gaze regression model": MODEL_PATH,
         "residual correction model": RESIDUAL_MODEL_PATH,
         "MediaPipe face model": FACE_LANDMARKER_MODEL_PATH,
-        "test scene": SCENE_IMAGE_PATH,
     }
 
     for description, file_path in required_files.items():
@@ -303,26 +324,136 @@ def draw_interface(
     return display_frame
 
 
+def localize_selected_object(
+    localizer: RgbdTargetLocalizer,
+    rgbd_frame: RealSenseFrame,
+    selected_object: DetectedObject,
+) -> LocalizedTarget | None:
+    if selected_object.mask is None:
+        print(
+            "ERROR: The selected object does not "
+            "have a segmentation mask.",
+            file=sys.stderr,
+        )
+        return None
+
+    target = localizer.localize(
+        rgbd_frame,
+        selected_object.mask,
+    )
+
+    if target is None:
+        print(
+            "ERROR: No valid depth was found for "
+            f"'{selected_object.label}'.",
+            file=sys.stderr,
+        )
+        return None
+
+    print(
+        f"Localized '{selected_object.label}' in "
+        f"camera frame: x={target.camera_x:.3f}, "
+        f"y={target.camera_y:.3f}, "
+        f"z={target.camera_z:.3f} m"
+    )
+
+    return target
+
+
+def selection_key(
+    detected_object: DetectedObject,
+) -> tuple:
+    if detected_object.track_id is not None:
+        return (
+            "track",
+            detected_object.track_id,
+        )
+
+    center_x, center_y = detected_object.center
+
+    return (
+        "fallback",
+        detected_object.label,
+        center_x // 80,
+        center_y // 80,
+    )
+
+
+def send_localized_robot_target(
+    target: LocalizedTarget,
+    calibration: CalibrationResult,
+    object_label: str,
+) -> None:
+    camera_point = np.asarray(
+        [
+            target.camera_x,
+            target.camera_y,
+            target.camera_z,
+        ],
+        dtype=np.float64,
+    )
+
+    base_point = transform_camera_point(
+        camera_point,
+        calibration,
+    )
+
+    qx, qy, qz, qw = ROBOT_TARGET_ORIENTATION
+
+    send_target_pose(
+        x=float(base_point[0]),
+        y=float(base_point[1]),
+        z=float(base_point[2]),
+        qx=qx,
+        qy=qy,
+        qz=qz,
+        qw=qw,
+        frame_id="base_link",
+    )
+
+    print(
+        f"Sent '{object_label}' in base_link: "
+        f"x={base_point[0]:.3f}, "
+        f"y={base_point[1]:.3f}, "
+        f"z={base_point[2]:.3f} m"
+    )
+
+
 def main() -> int:
     if not validate_required_files():
         return 1
 
-    scene_frame = cv2.imread(
-        str(SCENE_IMAGE_PATH)
-    )
+    camera_robot_calibration = None
 
-    if scene_frame is None:
+    if DEFAULT_OUTPUT_PATH.exists():
+        try:
+            camera_robot_calibration = (
+                load_calibration(
+                    DEFAULT_OUTPUT_PATH
+                )
+            )
+
+            print(
+                "Loaded camera-to-robot calibration: "
+                f"RMSE "
+                f"{camera_robot_calibration.rmse_meters * 1000.0:.1f} mm"
+            )
+        except (
+            KeyError,
+            OSError,
+            ValueError,
+        ) as error:
+            print(
+                "ERROR: Could not load camera-to-robot "
+                f"calibration: {error}",
+                file=sys.stderr,
+            )
+            return 1
+    else:
         print(
-            "ERROR: OpenCV could not load the test scene.",
-            file=sys.stderr,
+            "Camera-to-robot calibration not found. "
+            "Running in localization-only mode."
         )
-        return 1
-
-    scene_frame = cv2.resize(
-        scene_frame,
-        (DISPLAY_WIDTH, DISPLAY_HEIGHT),
-        interpolation=cv2.INTER_AREA,
-    )
 
     regression_model = load_regression_model(
         MODEL_PATH
@@ -335,25 +466,10 @@ def main() -> int:
     print("Loading YOLO segmentation model...")
 
     object_tracker = ObjectTracker(
-        confidence_threshold=0.15,
+        confidence_threshold=0.30,
     )
 
-    print("Detecting objects in the scene...")
-
-    detected_objects = object_tracker.track(
-        scene_frame
-    )
-
-    print(
-        f"Detected {len(detected_objects)} objects."
-    )
-
-    if not detected_objects:
-        print(
-            "ERROR: No objects were detected.",
-            file=sys.stderr,
-        )
-        return 1
+    target_localizer = RgbdTargetLocalizer()
 
     target_selector = TargetSelector(
         dwell_seconds=0.75,
@@ -391,6 +507,28 @@ def main() -> int:
         720,
     )
 
+    scene_camera = RealSenseCamera(
+        width=DISPLAY_WIDTH,
+        height=DISPLAY_HEIGHT,
+        frames_per_second=D435_FRAMES_PER_SECOND,
+    )
+
+    try:
+        device_information = scene_camera.start()
+    except RealSenseCameraError as error:
+        face_camera.release()
+        print(
+            f"ERROR: {error}",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(
+        f"RealSense started: "
+        f"{device_information.name}, "
+        f"serial {device_information.serial_number}"
+    )
+
     cv2.namedWindow(
         WINDOW_NAME,
         cv2.WINDOW_NORMAL,
@@ -404,6 +542,9 @@ def main() -> int:
 
     start_time = time.perf_counter()
 
+    last_selected_key: tuple | None = None
+    localized_target: LocalizedTarget | None = None
+
     try:
         with (
             mp.tasks.vision.FaceLandmarker
@@ -413,6 +554,13 @@ def main() -> int:
         ) as landmarker:
 
             while True:
+                rgbd_frame = scene_camera.get_frame()
+                scene_frame = rgbd_frame.color_bgr
+
+                detected_objects = object_tracker.track(
+                    scene_frame
+                )
+
                 success, face_frame = (
                     face_camera.read()
                 )
@@ -446,7 +594,10 @@ def main() -> int:
                 )
 
                 if gaze is None:
-                    target_selector.reset()
+                    target_selector = TargetSelector(
+                    dwell_seconds=0.75,
+                    margin_pixels=30,
+                    )
                     selection = None
                 else:
                     corrected_x, corrected_y = gaze
@@ -465,6 +616,55 @@ def main() -> int:
                     selection,
                 )
 
+                if (
+                    selection is None
+                    or selection.candidate is None
+                ):
+                    last_selected_key = None
+                    localized_target = None
+                elif (
+                    selection.selected is not None
+                ):
+                    selected_object = selection.selected
+                    selected_key = selection_key(
+                        selected_object
+                    )
+
+                    if selected_key != last_selected_key:
+                        localized_target = (
+                            localize_selected_object(
+                                target_localizer,
+                                rgbd_frame,
+                                selected_object,
+                            )
+                        )
+
+                        last_selected_key = selected_key
+
+                        if (
+                            localized_target is not None
+                            and camera_robot_calibration
+                            is not None
+                        ):
+                            try:
+                                send_localized_robot_target(
+                                    localized_target,
+                                    camera_robot_calibration,
+                                    selected_object.label,
+                                )
+                            except OSError as error:
+                                print(
+                                    "ERROR: Could not send robot "
+                                    f"target: {error}",
+                                    file=sys.stderr,
+                                )
+
+                if localized_target is not None:
+                    display_frame = draw_localized_target(
+                        display_frame,
+                        localized_target,
+                    )
+
                 cv2.imshow(
                     WINDOW_NAME,
                     display_frame,
@@ -478,7 +678,15 @@ def main() -> int:
                 ):
                     break
 
+    except RealSenseCameraError as error:
+        print(
+            f"ERROR: {error}",
+            file=sys.stderr,
+        )
+        return 1
+
     finally:
+        scene_camera.stop()
         face_camera.release()
         cv2.destroyAllWindows()
 
