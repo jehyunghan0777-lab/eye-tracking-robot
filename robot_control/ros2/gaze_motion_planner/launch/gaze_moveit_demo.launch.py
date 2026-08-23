@@ -20,6 +20,12 @@ def generate_launch_description():
     execute_motion = LaunchConfiguration("execute_motion")
     pose_bridge_port = LaunchConfiguration("pose_bridge_port")
     gripper_bridge_port = LaunchConfiguration("gripper_bridge_port")
+    grasp_descent_distance = LaunchConfiguration(
+        "grasp_descent_distance"
+    )
+    wrist_roll_lock_degrees = LaunchConfiguration(
+        "wrist_roll_lock_degrees"
+    )
 
     xacro_path = os.path.join(
         get_package_share_directory("so101_description"),
@@ -86,6 +92,7 @@ def generate_launch_description():
                     pose_bridge_port,
                     value_type=int,
                 ),
+                "output_topic": "/gaze/requested_target_pose",
             }
         ],
     )
@@ -104,6 +111,17 @@ def generate_launch_description():
                 "action_name": (
                     "/follower/gripper_controller/gripper_cmd"
                 ),
+                "requested_target_topic": (
+                    "/gaze/requested_target_pose"
+                ),
+                "motion_goal_topic": "/gaze/motion_goal",
+                "motion_completed_topic": (
+                    "/gaze/motion_completed"
+                ),
+                "descent_distance": ParameterValue(
+                    grasp_descent_distance,
+                    value_type=float,
+                ),
             }
         ],
     )
@@ -120,6 +138,10 @@ def generate_launch_description():
                     value_type=bool,
                 ),
                 "use_sim_time": use_sim_time,
+                "wrist_roll_lock_degrees": ParameterValue(
+                    wrist_roll_lock_degrees,
+                    value_type=float,
+                ),
             },
         ],
         remappings=[
@@ -169,6 +191,20 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "gripper_bridge_port",
                 default_value="5056",
+            ),
+            DeclareLaunchArgument(
+                "grasp_descent_distance",
+                default_value="0.06",
+                description=(
+                    "Vertical descent from pre-grasp to grasp in meters"
+                ),
+            ),
+            DeclareLaunchArgument(
+                "wrist_roll_lock_degrees",
+                default_value="32.57",
+                description=(
+                    "Calibrated wrist-roll value for a straight gripper"
+                ),
             ),
             so101_demo,
             pose_bridge_node,
