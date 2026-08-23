@@ -12,3 +12,4 @@
 .cproject text eol=lf
 .project text eol=lf
 .mxproject text eol=lf
+semg_control/firmware/semg_intent_controller/** -text
