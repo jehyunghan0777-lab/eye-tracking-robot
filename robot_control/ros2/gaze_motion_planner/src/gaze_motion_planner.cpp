@@ -1196,85 +1196,83 @@ int main(int argc, char* argv[])
                                 "Motion execution succeeded."
                             );
 
-                            auto final_state =
-                                move_group.getCurrentState(2.0);
+                            moveit::core::RobotState commanded_state(
+                                *current_state
+                            );
 
-                            if (!final_state) {
-                                RCLCPP_WARN(
+                            commanded_state.setJointGroupPositions(
+                                joint_model_group,
+                                best_joint_values
+                            );
+
+                            commanded_state.update();
+
+                            const Eigen::Isometry3d commanded_tcp_pose =
+                                commanded_state.getGlobalLinkTransform(
+                                    tcp_link
+                                );
+
+                            const Eigen::Vector3d commanded_position =
+                                commanded_tcp_pose.translation();
+
+                            const double commanded_position_error =
+                                (
+                                    commanded_position
+                                    - requested_position
+                                ).norm();
+
+                            RCLCPP_INFO(
+                                logger,
+                                "Executed commanded TCP: x=%.3f y=%.3f z=%.3f; target error=%.1f mm",
+                                commanded_position.x(),
+                                commanded_position.y(),
+                                commanded_position.z(),
+                                commanded_position_error * 1000.0
+                            );
+
+                            if (
+                                commanded_position_error
+                                > maximum_tcp_error
+                            ) {
+                                RCLCPP_ERROR(
                                     logger,
-                                    "Could not verify the final TCP pose."
+                                    "Commanded TCP error exceeded the safety threshold."
                                 );
                             } else {
-                                final_state->update();
-
-                                const Eigen::Isometry3d final_tcp_pose =
-                                    final_state->getGlobalLinkTransform(
-                                        tcp_link
+                                const Eigen::Quaterniond
+                                    commanded_orientation(
+                                        commanded_tcp_pose.rotation()
                                     );
 
-                                const Eigen::Vector3d final_position =
-                                    final_tcp_pose.translation();
+                                geometry_msgs::msg::PoseStamped completion;
 
-                                const double final_position_error =
-                                    (
-                                        final_position
-                                        - requested_position
-                                    ).norm();
+                                completion.header.stamp =
+                                    node->now();
+                                completion.header.frame_id =
+                                    "base_link";
+                                completion.pose.position.x =
+                                    commanded_position.x();
+                                completion.pose.position.y =
+                                    commanded_position.y();
+                                completion.pose.position.z =
+                                    commanded_position.z();
+                                completion.pose.orientation.x =
+                                    commanded_orientation.x();
+                                completion.pose.orientation.y =
+                                    commanded_orientation.y();
+                                completion.pose.orientation.z =
+                                    commanded_orientation.z();
+                                completion.pose.orientation.w =
+                                    commanded_orientation.w();
+
+                                motion_completed_publisher->publish(
+                                    completion
+                                );
 
                                 RCLCPP_INFO(
                                     logger,
-                                    "Final modeled TCP: x=%.3f y=%.3f z=%.3f; target error=%.1f mm",
-                                    final_position.x(),
-                                    final_position.y(),
-                                    final_position.z(),
-                                    final_position_error * 1000.0
+                                    "Published motion completion after successful controller execution."
                                 );
-
-                                if (
-                                    final_position_error
-                                    > maximum_tcp_error
-                                ) {
-                                    RCLCPP_ERROR(
-                                        logger,
-                                        "Final TCP error exceeded the safety threshold."
-                                    );
-                                } else {
-                                    const Eigen::Quaterniond
-                                        final_orientation(
-                                            final_tcp_pose.rotation()
-                                        );
-
-                                    geometry_msgs::msg::PoseStamped
-                                        completion;
-
-                                    completion.header.stamp =
-                                        node->now();
-                                    completion.header.frame_id =
-                                        "base_link";
-                                    completion.pose.position.x =
-                                        final_position.x();
-                                    completion.pose.position.y =
-                                        final_position.y();
-                                    completion.pose.position.z =
-                                        final_position.z();
-                                    completion.pose.orientation.x =
-                                        final_orientation.x();
-                                    completion.pose.orientation.y =
-                                        final_orientation.y();
-                                    completion.pose.orientation.z =
-                                        final_orientation.z();
-                                    completion.pose.orientation.w =
-                                        final_orientation.w();
-
-                                    motion_completed_publisher->publish(
-                                        completion
-                                    );
-
-                                    RCLCPP_INFO(
-                                        logger,
-                                        "Published verified motion completion."
-                                    );
-                                }
                             }
                         }
                     }
